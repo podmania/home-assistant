@@ -1,0 +1,15 @@
+services:
+  haos:
+    image: podmania/home-assistant:latest
+    container_name: haos
+    devices:
+      - /dev/kvm
+      - /dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - 8006:8006
+    volumes:
+      - ./haos:/storage
+    restart: always
+    stop_grace_period: 2m
