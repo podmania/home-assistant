@@ -70,13 +70,15 @@ jobs:
             s|hash = \"sha256-[^\"]*\"|hash = \"$HASH_ARM\"|
           }" flake.nix
 
-          sed -i "s|# HAOS_VERSION=.*|# HAOS_VERSION=$VERSION|" flake.nix
+      - name: Update flake.lock
+        run: |
+          nix --extra-experimental-features flakes flake lock
 
-      - name: Commit and push
+      - name: Commit and push changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add flake.nix
+          git add flake.nix flake.lock
           if git diff --staged --quiet; then
             echo "No changes to commit"
             exit 0
