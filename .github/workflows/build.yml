@@ -21,17 +21,17 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v27
+        uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
-            experimental-features = nix-command
+            experimental-features = nix-command flakes
             system-features = kvm
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -39,7 +39,7 @@ jobs:
 
       - name: Build container image for ${{ matrix.arch }}
         run: |
-          nix build .#haos-container-${{ matrix.arch }}
+          nix build --extra-experimental-features flakes .#haos-container-${{ matrix.arch }}
           docker load < result
           docker tag home-assistant-os:latest ghcr.io/${{ github.repository_owner }}/home-assistant-os:latest-${{ matrix.tag_suffix }}
           docker tag home-assistant-os:latest ghcr.io/${{ github.repository_owner }}/home-assistant-os:${{ github.sha }}-${{ matrix.tag_suffix }}
@@ -56,7 +56,7 @@ jobs:
       packages: write
     steps:
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -75,7 +75,6 @@ jobs:
             --amend $IMAGE:${{ github.sha }}-arm64
           docker manifest push $IMAGE:${{ github.sha }}
 
-          # Optional stable tag (points to same as latest)
           docker manifest create $IMAGE:stable \
             --amend $IMAGE:latest-amd64 \
             --amend $IMAGE:latest-arm64
