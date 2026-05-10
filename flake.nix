@@ -1,5 +1,5 @@
 {
-  description = "HAOS";
+  description = "HAOS with virtio-fs shared /config (multi-arch, distroless)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -13,204 +13,136 @@
     n2c = nix2container.outputs.packages.${system}.nix2container;
 
     # ------------------------------------------------------------------------
-    # 1. Download HAOS (compressed)
+    # Fetch HAOS images for both architectures (compressed)
     # ------------------------------------------------------------------------
-    haosXz = pkgs.fetchurl {
+    haosXz_x86_64 = pkgs.fetchurl {
       url = "https://github.com/home-assistant/operating-system/releases/download/17.0/haos_ova-17.0.qcow2.xz";
-      hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+      hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";  # Updated by update workflow
+      curlOpts = [ "--user-agent" "Mozilla/5.0" ];
+    };
+
+    haosXz_aarch64 = pkgs.fetchurl {
+      url = "https://github.com/home-assistant/operating-system/releases/download/17.0/haos_ova-17.0.qcow2.xz";
+      hash = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";    # Updated by update workflow
       curlOpts = [ "--user-agent" "Mozilla/5.0" ];
     };
 
     # ------------------------------------------------------------------------
-    # 2. Decompress and customize the HAOS image at build time
+    # Helper function to build the container for a given architecture
     # ------------------------------------------------------------------------
-    # We decompress -> customize -> then re-compress to save space.
-    haosCustomizedXz = pkgs.stdenv.mkDerivation {
-      name = "haos-customized";
-      nativeBuildInputs = with pkgs; [ xz libguestfs qemu ];
-      buildCommand = ''
-        # Decompress original image
-        xz -d < ${haosXz} > haos.raw
+    mkHaosContainer = { arch, haosXz, pkgs }:
+      let
+        extraPackages = with pkgs; [ qemu ovmf virtiofsd xz ];
 
-        # Customize the image using virt-customize (no root required with proper qemu)
-        # Set LIBGUESTFS_BACKEND=direct to avoid libvirtd
-        export LIBGUESTFS_BACKEND=direct
+        entrypointScript = pkgs.writeShellScript "entrypoint.sh" ''
+          #!${pkgs.bash}/bin/bash
+          set -e
 
-        # Create mount unit script and first-boot service
-        cat > mount-config.sh <<'EOF'
-        #!/bin/bash
-        mkdir -p /mnt/config
-        cat > /etc/systemd/system/mnt-config.mount <<UNIT
-        [Unit]
-        Description=Mount virtio-fs config share
-        Before=homeassistant.service
+          SHARED_DIR="/config"
+          SOCKET_PATH="/run/virtiofsd/ha.sock"
 
-        [Mount]
-        What=config
-        Where=/mnt/config
-        Type=virtiofs
-        Options=defaults
+          mkdir -p "$SHARED_DIR" "$(dirname $SOCKET_PATH)"
 
-        [Install]
-        WantedBy=multi-user.target
-        UNIT
+          echo "Starting virtiofsd, sharing $SHARED_DIR ..."
+          virtiofsd \
+            --socket-path="$SOCKET_PATH" \
+            --shared-dir="$SHARED_DIR" \
+            --cache=auto \
+            --sandbox=chroot \
+            --syslog &
+          VIRTIOFSD_PID=$!
 
-        systemctl enable mnt-config.mount
-        systemctl start mnt-config.mount
+          while [ ! -S "$SOCKET_PATH" ]; do
+            if ! kill -0 $VIRTIOFSD_PID 2>/dev/null; then
+              echo "ERROR: virtiofsd died"
+              exit 1
+            fi
+            sleep 0.1
+          done
 
-        # Replace /config with symlink to the mount
-        if [ -L /config ]; then rm /config; elif [ -d /config ]; then mv /config /config.orig; fi
-        ln -s /mnt/config /config
+          # HAOS disk setup
+          IMAGE_XZ="/storage/haos.qcow2.xz"
+          IMAGE_QCOW2="''${IMAGE_XZ%.xz}"
 
-        # Disable this first-boot script
-        systemctl disable haos-firstboot
-        rm /etc/systemd/system/haos-firstboot.service
-        EOF
+          if [ ! -f "$IMAGE_XZ" ]; then
+            cp ${haosXz} "$IMAGE_XZ"
+          fi
+          if [ ! -f "$IMAGE_QCOW2" ]; then
+            echo "Decompressing HAOS (first run)..."
+            unxz -k "$IMAGE_XZ"
+          fi
 
-        chmod +x mount-config.sh
+          KVM_ARGS=""
+          if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            KVM_ARGS="-enable-kvm -cpu host"
+          else
+            echo "WARNING: /dev/kvm not accessible – using TCG"
+          fi
 
-        # Inject the script and create a systemd service that runs it once
-        virt-customize -a haos.raw \
-          --run-command "mkdir -p /usr/local/bin" \
-          --upload mount-config.sh:/usr/local/bin/mount-config.sh \
-          --run-command "chmod +x /usr/local/bin/mount-config.sh" \
-          --run-command "cat > /etc/systemd/system/haos-firstboot.service <<EOF
-        [Unit]
-        Description=HAOS first boot configuration
-        After=network.target
+          exec qemu-system-${arch} \
+            $KVM_ARGS \
+            -M q35 \
+            -smp cores="''${CPU_CORES:-2}" \
+            -m "''${RAM_SIZE:-4096}" \
+            -drive file="$IMAGE_QCOW2",if=virtio,cache=unsafe,aio=native \
+            -drive file=${pkgs.OVMF.fd}/FV/OVMF.fd,if=pflash,format=raw,unit=0 \
+            -drive file=${pkgs.OVMF.fd}/FV/OVMF_VARS.fd,if=pflash,format=raw,unit=1 \
+            -netdev user,id=net0,hostfwd=tcp::''${FORWARD_PORT:-8123}-:8123 \
+            -device virtio-net-pci,netdev=net0 \
+            -chardev socket,id=char0,path="$SOCKET_PATH" \
+            -device vhost-user-fs-pci,queue-size=1024,chardev=char0,tag=config \
+            -nographic -monitor none -serial mon:stdio
+        '';
 
-        [Service]
-        Type=oneshot
-        ExecStart=/usr/local/bin/mount-config.sh
-        RemainAfterExit=yes
+        extraLayers = pkgs.symlinkJoin {
+          name = "haos-extra";
+          paths = extraPackages;
+          buildInputs = [ pkgs.buildPackages.s6-portable-utils ];
+          postBuild = ''
+            cp ${entrypointScript} $out/bin/entrypoint.sh
+            chmod +x $out/bin/entrypoint.sh
+            mkdir -p $out/run/virtiofsd
+          '';
+        };
 
-        [Install]
-        WantedBy=multi-user.target
-        EOF" \
-          --run-command "systemctl enable haos-firstboot.service"
+        imageConfig = {
+          Env = [
+            "CPU_CORES=2"
+            "RAM_SIZE=4096"
+            "FORWARD_PORT=8123"
+          ];
+          ExposedPorts = {
+            "8123/tcp" = {};
+          };
+          Volumes = {
+            "/storage" = {};
+            "/config" = {};
+          };
+          Entrypoint = [ "/bin/entrypoint.sh" ];
+        };
 
-        # Re-compress the customized image
-        xz -c haos.raw > $out
-      '';
-    };
-
-    # ------------------------------------------------------------------------
-    # 3. Extra packages for runtime
-    # ------------------------------------------------------------------------
-    extraPackages = with pkgs; [
-      qemu
-      ovmf
-      virtiofsd
-      xz
-    ];
-
-    # ------------------------------------------------------------------------
-    # 4. Entrypoint script (container runtime)
-    # ------------------------------------------------------------------------
-    entrypointScript = pkgs.writeShellScript "entrypoint.sh" ''
-      #!${pkgs.bash}/bin/bash
-      set -e
-
-      SHARED_DIR="/config"
-      SOCKET_PATH="/run/virtiofsd/ha.sock"
-
-      mkdir -p "$SHARED_DIR" "$(dirname $SOCKET_PATH)"
-
-      # Start virtiofsd
-      virtiofsd \
-        --socket-path="$SOCKET_PATH" \
-        --shared-dir="$SHARED_DIR" \
-        --cache=auto \
-        --sandbox=chroot \
-        --syslog &
-      VIRTIOFSD_PID=$!
-
-      while [ ! -S "$SOCKET_PATH" ]; do
-        if ! kill -0 $VIRTIOFSD_PID 2>/dev/null; then
-          echo "ERROR: virtiofsd died"
-          exit 1
-        fi
-        sleep 0.1
-      done
-
-      # HAOS disk setup
-      IMAGE_XZ="/storage/haos.qcow2.xz"
-      IMAGE_QCOW2="''${IMAGE_XZ%.xz}"
-
-      if [ ! -f "$IMAGE_XZ" ]; then
-        cp ${haosCustomizedXz} "$IMAGE_XZ"
-      fi
-      if [ ! -f "$IMAGE_QCOW2" ]; then
-        echo "Decompressing HAOS (first run)..."
-        unxz -k "$IMAGE_XZ"
-      fi
-
-      KVM_ARGS=""
-      if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-        KVM_ARGS="-enable-kvm -cpu host"
-      else
-        echo "WARNING: /dev/kvm not accessible – using TCG"
-      fi
-
-      exec qemu-system-x86_64 \
-        $KVM_ARGS \
-        -M q35 \
-        -smp cores="''${CPU_CORES:-2}" \
-        -m "''${RAM_SIZE:-4096}" \
-        -drive file="$IMAGE_QCOW2",if=virtio,cache=unsafe,aio=native \
-        -drive file=${pkgs.OVMF.fd}/FV/OVMF.fd,if=pflash,format=raw,unit=0 \
-        -drive file=${pkgs.OVMF.fd}/FV/OVMF_VARS.fd,if=pflash,format=raw,unit=1 \
-        -netdev user,id=net0,hostfwd=tcp::''${FORWARD_PORT:-8123}-:8123 \
-        -device virtio-net-pci,netdev=net0 \
-        -chardev socket,id=char0,path="$SOCKET_PATH" \
-        -device vhost-user-fs-pci,queue-size=1024,chardev=char0,tag=config \
-        -nographic -monitor none -serial mon:stdio
-    '';
-
-    # ------------------------------------------------------------------------
-    # 5. Rootfs overlay
-    # ------------------------------------------------------------------------
-    extraLayers = pkgs.symlinkJoin {
-      name = "haos-extra";
-      paths = extraPackages;
-      buildInputs = [ pkgs.buildPackages.s6-portable-utils ];
-      postBuild = ''
-        cp ${entrypointScript} $out/bin/entrypoint.sh
-        chmod +x $out/bin/entrypoint.sh
-        mkdir -p $out/run/virtiofsd
-      '';
-    };
-
-    # ------------------------------------------------------------------------
-    # 6. Container config
-    # ------------------------------------------------------------------------
-    imageConfig = {
-      Env = [
-        "CPU_CORES=2"
-        "RAM_SIZE=4096"
-        "FORWARD_PORT=8123"
-      ];
-      ExposedPorts = {
-        "8123/tcp" = {};
-      };
-      Volumes = {
-      # "/storage" = {};
-        "/config" = {};
-      };
-      Entrypoint = [ "/bin/entrypoint.sh" ];
-    };
-
-  in {
-    packages.${system} = {
-      haos-container = n2c.buildImage {
-        name = "home-assistant";
+      in n2c.buildImage {
+        name = "home-assistant-os";
         tag = "latest";
         fromImage = base.packages.${system}.base-debug-image;
         copyToRoot = [ extraLayers ];
         config = imageConfig;
         maxLayers = 6;
       };
-      default = self.packages.${system}.haos-container;
+
+  in {
+    packages.${system} = {
+      haos-container-x86_64 = mkHaosContainer {
+        arch = "x86_64";
+        haosXz = haosXz_x86_64;
+        inherit pkgs;
+      };
+      haos-container-aarch64 = mkHaosContainer {
+        arch = "aarch64";
+        haosXz = haosXz_aarch64;
+        inherit pkgs;
+      };
+      default = self.packages.${system}.haos-container-x86_64;
     };
   };
 }
