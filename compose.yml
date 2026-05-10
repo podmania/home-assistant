@@ -1,15 +1,19 @@
 services:
   haos:
-    image: podmania/home-assistant:latest
-    container_name: haos
+    image: ghcr.io/podmania/home-assistant:latest
+    # podman:
+    userns_mode: "keep-id"
+    # docker:
+    # user: ${id -u}:${id -g}
+    container_name: home-assistant
     devices:
       - /dev/kvm
-      - /dev/net/tun
-    cap_add:
-      - NET_ADMIN
-    ports:
-      - 8006:8006
     volumes:
-      - ./haos:/storage
+      - ./config:/config
+    ports:
+      - "8123:8123"
+    environment:
+      - CPU_CORES=2
+      - RAM_SIZE=4096
+      - FORWARD_PORT=8123
     restart: always
-    stop_grace_period: 2m
