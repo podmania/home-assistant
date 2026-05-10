@@ -13,24 +13,26 @@
     n2c = nix2container.outputs.packages.${system}.nix2container;
 
     # ------------------------------------------------------------------------
-    # Fetch HAOS images for both architectures (compressed)
+    # Fetch HAOS images
+    # x86_64: raw .img.xz (will convert to qcow2 at runtime)
+    # aarch64: direct .qcow2.xz
     # ------------------------------------------------------------------------
-    haosXz_x86_64 = pkgs.fetchurl {
-      url = "https://github.com/home-assistant/operating-system/releases/download/17.0/haos_ova-17.0.qcow2.xz";
-      hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";  # Updated by update workflow
+    haosImg_x86_64 = pkgs.fetchurl {
+      url = "https://github.com/home-assistant/operating-system/releases/download/17.3/haos_generic-x86-64-17.3.img.xz";
+      hash = "sha256-df891ed681db241eb963d983592108a64fc3d15690ac33b7a6d1f15c0fcc510a";
       curlOpts = [ "--user-agent" "Mozilla/5.0" ];
     };
 
     haosXz_aarch64 = pkgs.fetchurl {
-      url = "https://github.com/home-assistant/operating-system/releases/download/17.0/haos_ova-17.0.qcow2.xz";
-      hash = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";    # Updated by update workflow
+      url = "https://github.com/home-assistant/operating-system/releases/download/17.3/haos_generic-aarch64-17.3.qcow2.xz";
+      hash = "sha256-f5b2f350557cfff91b4d2e33777b623c0203858d94a116b29962c8147ab456e5";
       curlOpts = [ "--user-agent" "Mozilla/5.0" ];
     };
 
     # ------------------------------------------------------------------------
     # Helper function to build the container for a given architecture
     # ------------------------------------------------------------------------
-    mkHaosContainer = { arch, haosXz, pkgs }:
+    mkHaosContainer = { arch, isX86 ? false, haosSource, pkgs }:
       let
         extraPackages = with pkgs; [ qemu ovmf virtiofsd xz ];
 
@@ -60,16 +62,24 @@
             sleep 0.1
           done
 
-          # HAOS disk setup
-          IMAGE_XZ="/storage/haos.qcow2.xz"
-          IMAGE_QCOW2="''${IMAGE_XZ%.xz}"
+          IMAGE_XZ="/storage/haos.img.xz"
+          IMAGE_QCOW2="/storage/haos.qcow2"
 
           if [ ! -f "$IMAGE_XZ" ]; then
-            cp ${haosXz} "$IMAGE_XZ"
+            cp ${haosSource} "$IMAGE_XZ"
           fi
+
           if [ ! -f "$IMAGE_QCOW2" ]; then
-            echo "Decompressing HAOS (first run)..."
+            echo "Decompressing and converting disk image (first run only)..."
             unxz -k "$IMAGE_XZ"
+            if [ "${isX86}" = "true" ]; then
+              # Convert raw .img to qcow2
+              qemu-img convert -f raw -O qcow2 "''${IMAGE_XZ%.xz}" "$IMAGE_QCOW2"
+              rm "''${IMAGE_XZ%.xz}"   # remove raw to save space
+            else
+              # aarch64: already a qcow2, just rename
+              mv "''${IMAGE_XZ%.xz}" "$IMAGE_QCOW2"
+            fi
           fi
 
           KVM_ARGS=""
@@ -134,12 +144,14 @@
     packages.${system} = {
       haos-container-x86_64 = mkHaosContainer {
         arch = "x86_64";
-        haosXz = haosXz_x86_64;
+        isX86 = true;
+        haosSource = haosImg_x86_64;
         inherit pkgs;
       };
       haos-container-aarch64 = mkHaosContainer {
         arch = "aarch64";
-        haosXz = haosXz_aarch64;
+        isX86 = false;
+        haosSource = haosXz_aarch64;
         inherit pkgs;
       };
       default = self.packages.${system}.haos-container-x86_64;
