@@ -20,7 +20,7 @@ jobs:
         uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
-            experimental-features = nix-command
+            experimental-features = nix-command flakes
 
       - name: Get latest HAOS release
         id: release
@@ -33,9 +33,7 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-          # x86_64 generic image (raw .img.xz)
           URL_X86=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("haos_generic-x86-64-[0-9]+\\.[0-9]+\\.img\\.xz")) | .browser_download_url')
-          # aarch64 generic QCOW2 image
           URL_ARM=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("haos_generic-aarch64-[0-9]+\\.[0-9]+\\.qcow2\\.xz")) | .browser_download_url')
           if [ -z "$URL_X86" ] || [ -z "$URL_ARM" ]; then
             echo "ERROR: Assets not found"
@@ -49,8 +47,8 @@ jobs:
         run: |
           HASH_X86=$(nix-prefetch-url --type sha256 "${{ steps.release.outputs.url_x86 }}" --name haos_x86.img.xz)
           HASH_ARM=$(nix-prefetch-url --type sha256 "${{ steps.release.outputs.url_arm }}" --name haos_arm.qcow2.xz)
-          SRI_X86=$(nix hash convert --hash-algo sha256 --to sri "$HASH_X86")
-          SRI_ARM=$(nix hash convert --hash-algo sha256 --to sri "$HASH_ARM")
+          SRI_X86=$(nix --extra-experimental-features flakes hash convert --hash-algo sha256 --to sri "$HASH_X86")
+          SRI_ARM=$(nix --extra-experimental-features flakes hash convert --hash-algo sha256 --to sri "$HASH_ARM")
           echo "sri_x86=$SRI_X86" >> $GITHUB_OUTPUT
           echo "sri_arm=$SRI_ARM" >> $GITHUB_OUTPUT
 
@@ -62,19 +60,16 @@ jobs:
           HASH_X86="${{ steps.hashes.outputs.sri_x86 }}"
           HASH_ARM="${{ steps.hashes.outputs.sri_arm }}"
 
-          # Update x86_64 fetchurl block (raw .img.xz)
           sed -i "/haosImg_x86_64 =/,/^  ;/ {
             s|url = \".*\"|url = \"$URL_X86\"|;
             s|hash = \"sha256-[^\"]*\"|hash = \"$HASH_X86\"|
           }" flake.nix
 
-          # Update aarch64 fetchurl block (.qcow2.xz)
           sed -i "/haosXz_aarch64 =/,/^  ;/ {
             s|url = \".*\"|url = \"$URL_ARM\"|;
             s|hash = \"sha256-[^\"]*\"|hash = \"$HASH_ARM\"|
           }" flake.nix
 
-          # Optional: update a version comment
           sed -i "s|# HAOS_VERSION=.*|# HAOS_VERSION=$VERSION|" flake.nix
 
       - name: Commit and push
