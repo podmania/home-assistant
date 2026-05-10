@@ -1,6 +1,8 @@
 name: Build and push HAOS container images
 
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -43,7 +45,7 @@ jobs:
           docker load < result
           docker tag home-assistant-os:latest ghcr.io/${{ github.repository_owner }}/home-assistant-os:latest-${{ matrix.tag_suffix }}
           docker tag home-assistant-os:latest ghcr.io/${{ github.repository_owner }}/home-assistant-os:${{ github.sha }}-${{ matrix.tag_suffix }}
-          
+
       - name: Push architecture-specific images
         run: |
           docker push ghcr.io/${{ github.repository_owner }}/home-assistant-os:latest-${{ matrix.tag_suffix }}
@@ -79,3 +81,50 @@ jobs:
             --amend $IMAGE:latest-amd64 \
             --amend $IMAGE:latest-arm64
           docker manifest push $IMAGE:stable
+
+  create-release:
+    needs: create-manifest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Extract HAOS version from flake.nix
+        id: version
+        run: |
+          # Extract version from the x86_64 URL (e.g., 17.3)
+          VERSION=$(grep -oP 'haos_generic-x86-64-\K[0-9]+\.[0-9]+' flake.nix | head -1)
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: Could not extract version from flake.nix"
+            exit 1
+          fi
+          echo "haos_version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if release already exists
+        id: check_release
+        run: |
+          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        if: steps.check_release.outputs.exists == 'false'
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "Home Assistant OS ${{ steps.version.outputs.haos_version }}" \
+            --notes "Container image for HAOS ${{ steps.version.outputs.haos_version }}
+
+            Pull with:
+            \`\`\`
+            docker pull ghcr.io/${{ github.repository_owner }}/home-assistant-os:latest
+            \`\`\`
+
+            See [README](https://github.com/${{ github.repository }}#readme) for usage."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
