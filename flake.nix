@@ -20,13 +20,13 @@
     haosImg_x86_64 = pkgs.fetchurl {
       url = "https://github.com/home-assistant/operating-system/releases/download/17.3/haos_generic-x86-64-17.3.img.xz";
       hash = "sha256-34ke1oHbJB65Y9mDWSEIpk/D0VaQrDO3ptHxXA/MUQo=";
-      curlOpts = [ "--user-agent" "Mozilla/5.0" ];
+      curlOpts = "--user-agent Mozilla/5.0";
     };
 
     haosXz_aarch64 = pkgs.fetchurl {
       url = "https://github.com/home-assistant/operating-system/releases/download/17.3/haos_generic-aarch64-17.3.qcow2.xz";
       hash = "sha256-9bLzUFV8//kbTS4zd3tiPAIDhY2UoRaymWLIFHq0VuU=";
-      curlOpts = [ "--user-agent" "Mozilla/5.0" ];
+      curlOpts = "--user-agent Mozilla/5.0";
     };
 
     # ------------------------------------------------------------------------
@@ -72,7 +72,7 @@
           if [ ! -f "$IMAGE_QCOW2" ]; then
             echo "Decompressing and converting disk image (first run only)..."
             unxz -k "$IMAGE_XZ"
-            if [ "${isX86}" = "true" ]; then
+            if [ "${if isX86 then "true" else "false"}" = "true" ]; then
               # Convert raw .img to qcow2
               qemu-img convert -f raw -O qcow2 "''${IMAGE_XZ%.xz}" "$IMAGE_QCOW2"
               rm "''${IMAGE_XZ%.xz}"   # remove raw to save space
@@ -125,7 +125,6 @@
             "8123/tcp" = {};
           };
           Volumes = {
-            "/storage" = {};
             "/config" = {};
           };
           Entrypoint = [ "/bin/entrypoint.sh" ];
