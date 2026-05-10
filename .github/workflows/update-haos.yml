@@ -41,16 +41,14 @@ jobs:
           fi
           echo "url_x86=$URL_X86" >> $GITHUB_OUTPUT
           echo "url_arm=$URL_ARM" >> $GITHUB_OUTPUT
-
+      
       - name: Compute hashes
         id: hashes
         run: |
           HASH_X86=$(nix-prefetch-url --type sha256 "${{ steps.release.outputs.url_x86 }}" --name haos_x86.img.xz)
           HASH_ARM=$(nix-prefetch-url --type sha256 "${{ steps.release.outputs.url_arm }}" --name haos_arm.qcow2.xz)
-          SRI_X86=$(nix --extra-experimental-features flakes hash convert --hash-algo sha256 --to sri "$HASH_X86")
-          SRI_ARM=$(nix --extra-experimental-features flakes hash convert --hash-algo sha256 --to sri "$HASH_ARM")
-          echo "sri_x86=$SRI_X86" >> $GITHUB_OUTPUT
-          echo "sri_arm=$SRI_ARM" >> $GITHUB_OUTPUT
+          echo "base32_x86=sha256-$HASH_X86" >> $GITHUB_OUTPUT
+          echo "base32_arm=sha256-$HASH_ARM" >> $GITHUB_OUTPUT
 
       - name: Update flake.nix
         run: |
@@ -64,12 +62,12 @@ jobs:
             s|url = \".*\"|url = \"$URL_X86\"|;
             s|hash = \"sha256-[^\"]*\"|hash = \"$HASH_X86\"|
           }" flake.nix
-
+          
           sed -i "/haosXz_aarch64 =/,/^  ;/ {
             s|url = \".*\"|url = \"$URL_ARM\"|;
             s|hash = \"sha256-[^\"]*\"|hash = \"$HASH_ARM\"|
           }" flake.nix
-
+          
       - name: Update flake.lock
         run: |
           nix --extra-experimental-features flakes flake lock
