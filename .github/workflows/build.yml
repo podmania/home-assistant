@@ -1,8 +1,6 @@
 name: Build and push HAOS container images
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
