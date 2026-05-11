@@ -52,11 +52,10 @@ jobs:
 
       - name: Update flake.nix
         run: |
-          VERSION="${{ steps.release.outputs.version }}"
           URL_X86="${{ steps.release.outputs.url_x86 }}"
           URL_ARM="${{ steps.release.outputs.url_arm }}"
-          HASH_X86="${{ steps.hashes.outputs.sri_x86 }}"
-          HASH_ARM="${{ steps.hashes.outputs.sri_arm }}"
+          HASH_X86="${{ steps.hashes.outputs.base32_x86 }}"
+          HASH_ARM="${{ steps.hashes.outputs.base32_arm }}"
 
           sed -i "/haosImg_x86_64 =/,/^  ;/ {
             s|url = \".*\"|url = \"$URL_X86\"|;
