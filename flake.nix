@@ -16,13 +16,13 @@
 
           haosImg_x86_64 = pkgs.fetchurl {
             url = "https://github.com/home-assistant/operating-system/releases/download/17.3/haos_generic-x86-64-17.3.img.xz";
-            hash = "sha256-0000000000000000000000000000000000000000000000000000=";
+            hash = "sha256-34ke1oHbJB65Y9mDWSEIpk/D0VaQrDO3ptHxXA/MUQo=";
             curlOpts = "--user-agent Mozilla/5.0";
           };
           
           haosXz_aarch64 = pkgs.fetchurl {
             url = "https://github.com/home-assistant/operating-system/releases/download/17.3/haos_generic-aarch64-17.3.qcow2.xz";
-            hash = "sha256-0000000000000000000000000000000000000000000000000000=";
+            hash = "sha256-9bLzUFV8//kbTS4zd3tiPAIDhY2UoRaymWLIFHq0VuU=";
             curlOpts = "--user-agent Mozilla/5.0";
           };
 
