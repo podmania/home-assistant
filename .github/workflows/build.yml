@@ -126,3 +126,9 @@ jobs:
             See [README](https://github.com/${{ github.repository }}#readme) for usage."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Debug build failure
+        if: failure()
+        run: |
+          nix build --keep-failed --extra-experimental-features flakes --impure .#haos-container-x86_64
+          echo "Build directory: $(find /tmp -name 'nix-build-*.drv-*' -type d | head -1)"
