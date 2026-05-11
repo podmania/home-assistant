@@ -17,12 +17,12 @@
           # Dummy SRI hashes (updated by CI)
           haosImg_x86_64 = pkgs.fetchurl {
             url = "https://github.com/home-assistant/operating-system/releases/download/17.3/haos_generic-x86-64-17.3.img.xz";
-            hash = "sha256-34ke1oHbJB65Y9mDWSEIpk/D0VaQrDO3ptHxXA/MUQo=";
+            hash = "sha256-0000000000000000000000000000000000000000000000000000=";
             curlOpts = "--user-agent Mozilla/5.0";
           };
           haosXz_aarch64 = pkgs.fetchurl {
             url = "https://github.com/home-assistant/operating-system/releases/download/17.3/haos_generic-aarch64-17.3.qcow2.xz";
-            hash = "sha256-9bLzUFV8//kbTS4zd3tiPAIDhY2UoRaymWLIFHq0VuU=";
+            hash = "sha256-0000000000000000000000000000000000000000000000000000=";
             curlOpts = "--user-agent Mozilla/5.0";
           };
 
@@ -87,10 +87,11 @@
 
               extraLayers = pkgs.symlinkJoin {
                 name = "haos-extra";
-                paths = [ baseEnv entrypointScript ];
+                paths = [ baseEnv ];   # only directories
                 postBuild = ''
-                  mkdir -p $out/run/virtiofsd
-                  ln -sf ${entrypointScript} $out/bin/entrypoint.sh
+                  mkdir -p $out/bin $out/run/virtiofsd
+                  cp ${entrypointScript} $out/bin/entrypoint.sh
+                  chmod +x $out/bin/entrypoint.sh
                   ln -sf ${pkgs.bashInteractive}/bin/bash $out/bin/sh
                 '';
               };
