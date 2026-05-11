@@ -1,5 +1,5 @@
 {
-  description = "HAOS with virtio-fs and USB passthrough";
+  description = "HAOS with virtio-fs (stable, no device passthrough)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -30,7 +30,6 @@
             let
               extraPackages = with pkgs; [ qemu OVMF virtiofsd xz ];
 
-              # Generate entrypoint script with all paths interpolated
               entrypointScript = pkgs.writeShellScript "entrypoint.sh" ''
                 #!${pkgs.bash}/bin/bash
                 set -e
@@ -66,16 +65,6 @@
                   KVM_ARGS="-enable-kvm -cpu host"
                 fi
 
-                QEMU_USB_ARGS=""
-                if [ -d "/passthrough" ]; then
-                  QEMU_USB_ARGS="-usb"
-                  while IFS= read -r -d '' dev; do
-                    if [ -c "$dev" ] || [ -b "$dev" ]; then
-                      QEMU_USB_ARGS="$QEMU_USB_ARGS -device usb-host,hostdevice=$dev"
-                    fi
-                  done < <(find /passthrough -type c -o -type b -print0 2>/dev/null || true)
-                fi
-
                 exec qemu-system-${arch} $KVM_ARGS \
                   -M q35 \
                   -smp cores="''${CPU_CORES:-2}" \
@@ -87,7 +76,6 @@
                   -device virtio-net-pci,netdev=net0 \
                   -chardev socket,id=char0,path="$SOCKET_PATH" \
                   -device vhost-user-fs-pci,queue-size=1024,chardev=char0,tag=config \
-                  $QEMU_USB_ARGS \
                   -nographic -monitor none -serial mon:stdio
               '';
 
