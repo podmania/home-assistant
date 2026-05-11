@@ -37,13 +37,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build container image for ${{ matrix.arch }}
+      - name: Build container image
         run: |
-          nix build --extra-experimental-features flakes --impure .#haos-container-${{ matrix.arch }}
+          nix build --extra-experimental-features flakes --impure .#haos-image
           docker load < result
           docker tag home-assistant-os:latest ghcr.io/${{ github.repository_owner }}/home-assistant-os:latest-${{ matrix.tag_suffix }}
           docker tag home-assistant-os:latest ghcr.io/${{ github.repository_owner }}/home-assistant-os:${{ github.sha }}-${{ matrix.tag_suffix }}
-
+          
       - name: Push architecture-specific images
         run: |
           docker push ghcr.io/${{ github.repository_owner }}/home-assistant-os:latest-${{ matrix.tag_suffix }}
