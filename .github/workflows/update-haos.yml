@@ -49,22 +49,22 @@ jobs:
           HASH_ARM=$(nix-prefetch-url --type sha256 "${{ steps.release.outputs.url_arm }}" --name haos_arm.qcow2.xz)
           echo "base32_x86=sha256-$HASH_X86" >> $GITHUB_OUTPUT
           echo "base32_arm=sha256-$HASH_ARM" >> $GITHUB_OUTPUT
-
+      
       - name: Update flake.nix
         run: |
           URL_X86="${{ steps.release.outputs.url_x86 }}"
           URL_ARM="${{ steps.release.outputs.url_arm }}"
           HASH_X86="${{ steps.hashes.outputs.base32_x86 }}"
           HASH_ARM="${{ steps.hashes.outputs.base32_arm }}"
-
+      
           sed -i "/haosImg_x86_64 =/,/^  ;/ {
             s|url = \".*\"|url = \"$URL_X86\"|;
-            s|hash = \"sha256-[^\"]*\"|hash = \"$HASH_X86\"|
+            s|hash = .*;|hash = \"$HASH_X86\";|
           }" flake.nix
-          
+      
           sed -i "/haosXz_aarch64 =/,/^  ;/ {
             s|url = \".*\"|url = \"$URL_ARM\"|;
-            s|hash = \"sha256-[^\"]*\"|hash = \"$HASH_ARM\"|
+            s|hash = .*;|hash = \"$HASH_ARM\";|
           }" flake.nix
           
       - name: Update flake.lock
