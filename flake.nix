@@ -82,7 +82,7 @@
     # Combine extra packages and entrypoint into a single rootfs layer
     rootfs = pkgs.symlinkJoin {
       name = "haos-rootfs";
-      paths = extraPackages ++ [ entrypointScript ];
+      paths = extraPackages;   # only directory paths
       buildInputs = [ pkgs.coreutils ];
       postBuild = ''
         mkdir -p $out/bin $out/run/virtiofsd
