@@ -35,55 +35,54 @@ jobs:
 
           URL_X86=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("haos_generic-x86-64-[0-9]+\\.[0-9]+\\.img\\.xz")) | .browser_download_url')
           URL_ARM=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("haos_generic-aarch64-[0-9]+\\.[0-9]+\\.qcow2\\.xz")) | .browser_download_url')
-          if [ -z "$URL_X86" ] || [ -z "$URL_ARM" ]; then
-            echo "ERROR: Assets not found"
-            exit 1
-          fi
           echo "url_x86=$URL_X86" >> $GITHUB_OUTPUT
           echo "url_arm=$URL_ARM" >> $GITHUB_OUTPUT
-      
-      - name: Compute hashes
+
+      - name: Compute SRI hashes
         id: hashes
         run: |
-          HASH_X86=$(nix-prefetch-url --type sha256 "${{ steps.release.outputs.url_x86 }}" --name haos_x86.img.xz)
-          HASH_ARM=$(nix-prefetch-url --type sha256 "${{ steps.release.outputs.url_arm }}" --name haos_arm.qcow2.xz)
-          echo "base32_x86=sha256-$HASH_X86" >> $GITHUB_OUTPUT
-          echo "base32_arm=sha256-$HASH_ARM" >> $GITHUB_OUTPUT
-      
-      - name: Update flake.nix
+          HASH_X86_B32=$(nix-prefetch-url --type sha256 "${{ steps.release.outputs.url_x86 }}" --name haos_x86.img.xz)
+          HASH_ARM_B32=$(nix-prefetch-url --type sha256 "${{ steps.release.outputs.url_arm }}" --name haos_arm.qcow2.xz)
+          SRI_X86=$(nix --extra-experimental-features flakes hash convert --hash-algo sha256 --to sri "$HASH_X86_B32")
+          SRI_ARM=$(nix --extra-experimental-features flakes hash convert --hash-algo sha256 --to sri "$HASH_ARM_B32")
+          echo "sri_x86=$SRI_X86" >> $GITHUB_OUTPUT
+          echo "sri_arm=$SRI_ARM" >> $GITHUB_OUTPUT
+
+      - name: Update flake.nix (x86_64)
         run: |
-          URL_X86="${{ steps.release.outputs.url_x86 }}"
-          URL_ARM="${{ steps.release.outputs.url_arm }}"
-          HASH_X86="${{ steps.hashes.outputs.base32_x86 }}"
-          HASH_ARM="${{ steps.hashes.outputs.base32_arm }}"
-      
           sed -i "/haosImg_x86_64 =/,/^  ;/ {
-            s|url = \".*\"|url = \"$URL_X86\"|;
-            s|hash = .*;|hash = \"$HASH_X86\";|
+            s|url = \".*\"|url = \"${{ steps.release.outputs.url_x86 }}\"|;
+            s|hash = \"sha256-[^\"]*\"|hash = \"${{ steps.hashes.outputs.sri_x86 }}\"|
           }" flake.nix
-      
+
+      - name: Update flake.nix (aarch64)
+        run: |
           sed -i "/haosXz_aarch64 =/,/^  ;/ {
-            s|url = \".*\"|url = \"$URL_ARM\"|;
-            s|hash = .*;|hash = \"$HASH_ARM\";|
+            s|url = \".*\"|url = \"${{ steps.release.outputs.url_arm }}\"|;
+            s|hash = \"sha256-[^\"]*\"|hash = \"${{ steps.hashes.outputs.sri_arm }}\"|
           }" flake.nix
-          
+
       - name: Update flake.lock
         run: |
           nix --extra-experimental-features flakes flake lock
 
       - name: Commit and push changes
+        id: commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add flake.nix flake.lock
           if git diff --staged --quiet; then
             echo "No changes to commit"
+            echo "committed=false" >> $GITHUB_OUTPUT
             exit 0
           fi
           git commit -m "chore: update HAOS to ${{ steps.release.outputs.version }}"
           git push origin main
-
+          echo "committed=true" >> $GITHUB_OUTPUT
+      
       - name: Trigger build workflow
+        if: steps.commit.outputs.committed == 'true'
         run: |
           gh workflow run build.yml --ref main
         env:
