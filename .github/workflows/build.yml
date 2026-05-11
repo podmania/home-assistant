@@ -1,128 +1,90 @@
-name: Build and push HAOS container images
+name: Update HAOS version
 
 on:
+  schedule:
+    - cron: '0 3 * * 1'
   workflow_dispatch:
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - platform: amd64
-            runner: ubuntu-latest
-            arch: x86_64
-            tag_suffix: amd64
-          - platform: arm64
-            runner: ubuntu-24.04-arm
-            arch: aarch64
-            tag_suffix: arm64
-    runs-on: ${{ matrix.runner }}
+  update:
+    runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
+      contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-            system-features = kvm
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build container image for ${{ matrix.arch }}
+      - name: Get latest HAOS release
+        id: release
         run: |
-          nix build --extra-experimental-features flakes --impure .#haos-container-${{ matrix.arch }}
-          docker load < result
-          docker tag home-assistant-os:latest ghcr.io/${{ github.repository_owner }}/home-assistant-os:latest-${{ matrix.tag_suffix }}
-          docker tag home-assistant-os:latest ghcr.io/${{ github.repository_owner }}/home-assistant-os:${{ github.sha }}-${{ matrix.tag_suffix }}
+          RELEASE_JSON=$(curl -s \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/home-assistant/operating-system/releases/latest")
+          TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
+          VERSION=${TAG#v}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Push architecture-specific images
-        run: |
-          docker push ghcr.io/${{ github.repository_owner }}/home-assistant-os:latest-${{ matrix.tag_suffix }}
-          docker push ghcr.io/${{ github.repository_owner }}/home-assistant-os:${{ github.sha }}-${{ matrix.tag_suffix }}
-
-  create-manifest:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-    steps:
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create and push multi-arch manifest
-        run: |
-          IMAGE=ghcr.io/${{ github.repository_owner }}/home-assistant-os
-          docker manifest create $IMAGE:latest \
-            --amend $IMAGE:latest-amd64 \
-            --amend $IMAGE:latest-arm64
-          docker manifest push $IMAGE:latest
-
-          docker manifest create $IMAGE:${{ github.sha }} \
-            --amend $IMAGE:${{ github.sha }}-amd64 \
-            --amend $IMAGE:${{ github.sha }}-arm64
-          docker manifest push $IMAGE:${{ github.sha }}
-
-          docker manifest create $IMAGE:stable \
-            --amend $IMAGE:latest-amd64 \
-            --amend $IMAGE:latest-arm64
-          docker manifest push $IMAGE:stable
-
-  create-release:
-    needs: create-manifest
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Extract HAOS version from flake.nix
-        id: version
-        run: |
-          # Extract version from the x86_64 URL (e.g., 17.3)
-          VERSION=$(grep -oP 'haos_generic-x86-64-\K[0-9]+\.[0-9]+' flake.nix | head -1)
-          if [ -z "$VERSION" ]; then
-            echo "ERROR: Could not extract version from flake.nix"
+          URL_X86=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("haos_generic-x86-64-[0-9]+\\.[0-9]+\\.img\\.xz")) | .browser_download_url')
+          URL_ARM=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("haos_generic-aarch64-[0-9]+\\.[0-9]+\\.qcow2\\.xz")) | .browser_download_url')
+          if [ -z "$URL_X86" ] || [ -z "$URL_ARM" ]; then
+            echo "ERROR: Assets not found"
             exit 1
           fi
-          echo "haos_version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Check if release already exists
-        id: check_release
+          echo "url_x86=$URL_X86" >> $GITHUB_OUTPUT
+          echo "url_arm=$URL_ARM" >> $GITHUB_OUTPUT
+      
+      - name: Compute hashes
+        id: hashes
         run: |
-          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
+          HASH_X86=$(nix-prefetch-url --type sha256 "${{ steps.release.outputs.url_x86 }}" --name haos_x86.img.xz)
+          HASH_ARM=$(nix-prefetch-url --type sha256 "${{ steps.release.outputs.url_arm }}" --name haos_arm.qcow2.xz)
+          echo "base32_x86=sha256-$HASH_X86" >> $GITHUB_OUTPUT
+          echo "base32_arm=sha256-$HASH_ARM" >> $GITHUB_OUTPUT
+
+      - name: Update flake.nix
+        run: |
+          URL_X86="${{ steps.release.outputs.url_x86 }}"
+          URL_ARM="${{ steps.release.outputs.url_arm }}"
+          HASH_X86="${{ steps.hashes.outputs.base32_x86 }}"
+          HASH_ARM="${{ steps.hashes.outputs.base32_arm }}"
+
+          sed -i "/haosImg_x86_64 =/,/^  ;/ {
+            s|url = \".*\"|url = \"$URL_X86\"|;
+            s|hash = \"sha256-[^\"]*\"|hash = \"$HASH_X86\"|
+          }" flake.nix
+          
+          sed -i "/haosXz_aarch64 =/,/^  ;/ {
+            s|url = \".*\"|url = \"$URL_ARM\"|;
+            s|hash = \"sha256-[^\"]*\"|hash = \"$HASH_ARM\"|
+          }" flake.nix
+          
+      - name: Update flake.lock
+        run: |
+          nix --extra-experimental-features flakes flake lock
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add flake.nix flake.lock
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            exit 0
           fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git commit -m "chore: update HAOS to ${{ steps.release.outputs.version }}"
+          git push origin main
 
-      - name: Create GitHub Release
-        if: steps.check_release.outputs.exists == 'false'
+      - name: Trigger build workflow
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --title "Home Assistant OS ${{ steps.version.outputs.haos_version }}" \
-            --notes "Container image for HAOS ${{ steps.version.outputs.haos_version }}
-
-            Pull with:
-            \`\`\`
-            docker pull ghcr.io/${{ github.repository_owner }}/home-assistant-os:latest
-            \`\`\`
-
-            See [README](https://github.com/${{ github.repository }}#readme) for usage."
+          gh workflow run build.yml --ref main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
