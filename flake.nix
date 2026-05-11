@@ -25,6 +25,9 @@
 
     isX86 = system == "x86_64-linux";
     arch = if isX86 then "x86_64" else "aarch64";
+    machineType = if isX86 then "q35" else "virt";
+    firmwareCode = "${pkgs.OVMF.fd}/FV/" + (if isX86 then "OVMF.fd" else "QEMU_EFI.fd");
+    firmwareVars = if isX86 then "${pkgs.OVMF.fd}/FV/OVMF_VARS.fd" else "/storage/efi-vars.fd";
 
     # Runtime dependencies
     extraPackages = with pkgs; [ qemu OVMF virtiofsd xz ];
@@ -59,19 +62,25 @@
           mv "''${IMAGE_XZ%.xz}" "$IMAGE_QCOW2"
         fi
       fi
-
-      KVM_ARGS=""
-      if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-        KVM_ARGS="-enable-kvm -cpu host"
+      ${if !isX86 then ''
+      if [ ! -f ${firmwareVars} ]; then
+        cp ${firmwareCode} ${firmwareVars}
       fi
+      '' else ""}
+
+      if [ ! -e /dev/kvm ] || [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+        echo "ERROR: KVM not available, refusing to run without hardware virtualization" >&2
+        exit 1
+      fi
+      KVM_ARGS="-enable-kvm -cpu host"
 
       exec qemu-system-${arch} $KVM_ARGS \
-        -M q35 \
+        -M ${machineType} \
         -smp cores="''${CPU_CORES:-2}" \
         -m "''${RAM_SIZE:-4096}" \
         -drive file="$IMAGE_QCOW2",if=virtio,cache=unsafe,aio=native \
-        -drive file=${pkgs.OVMF.fd}/FV/OVMF.fd,if=pflash,format=raw,unit=0 \
-        -drive file=${pkgs.OVMF.fd}/FV/OVMF_VARS.fd,if=pflash,format=raw,unit=1 \
+        -drive file=${firmwareCode},if=pflash,format=raw,unit=0 \
+        -drive file=${firmwareVars},if=pflash,format=raw,unit=1 \
         -netdev user,id=net0,hostfwd=tcp::''${FORWARD_PORT:-8123}-:8123 \
         -device virtio-net-pci,netdev=net0 \
         -chardev socket,id=char0,path="$SOCKET_PATH" \

@@ -12,10 +12,10 @@ jobs:
             runner: ubuntu-latest
             arch: x86_64
             tag_suffix: amd64
-          # - platform: arm64
-          #   runner: ubuntu-24.04-arm
-          #   arch: aarch64
-          #   tag_suffix: arm64
+          - platform: arm64
+            runner: ubuntu-24.04-arm
+            arch: aarch64
+            tag_suffix: arm64
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -39,8 +39,7 @@ jobs:
 
       - name: Build container image
         run: |
-          nix build --extra-experimental-features flakes --impure .#haos-image
-          docker load < result
+          nix run .#haos-image.copyToDockerDaemon --impure --extra-experimental-features flakes
           docker tag home-assistant-os:latest ghcr.io/${{ github.repository_owner }}/home-assistant-os:latest-${{ matrix.tag_suffix }}
           docker tag home-assistant-os:latest ghcr.io/${{ github.repository_owner }}/home-assistant-os:${{ github.sha }}-${{ matrix.tag_suffix }}
           
