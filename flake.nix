@@ -119,7 +119,7 @@
   in {
     packages.${system} = {
       haos-image = n2c.buildImage {
-        name = "home-assistant-os";
+        name = "home-assistant";
         tag = "latest";
         fromImage = base.packages.${system}.base-debug-image;
         layers = [

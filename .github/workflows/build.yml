@@ -1,133 +1,241 @@
-name: Build and push HAOS container images
+name: Build & Publish
+
+permissions:
+  contents: write
+  packages: write
 
 on:
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild current version'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: home-assistant
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - platform: amd64
-            runner: ubuntu-latest
-            arch: x86_64
-            tag_suffix: amd64
-          - platform: arm64
-            runner: ubuntu-24.04-arm
-            arch: aarch64
-            tag_suffix: arm64
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
-      packages: write
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.version.outputs.new_version }}
+      should_build: ${{ steps.check.outputs.should_build }}
+      force_rebuild: ${{ steps.check.outputs.force_rebuild }}
     steps:
       - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            system-features = kvm
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build container image
-        run: |
-          nix run .#haos-image.copyToDockerDaemon --impure --extra-experimental-features flakes
-          docker tag home-assistant-os:latest ghcr.io/${{ github.repository_owner }}/home-assistant-os:latest-${{ matrix.tag_suffix }}
-          docker tag home-assistant-os:latest ghcr.io/${{ github.repository_owner }}/home-assistant-os:${{ github.sha }}-${{ matrix.tag_suffix }}
-          
-      - name: Push architecture-specific images
-        run: |
-          docker push ghcr.io/${{ github.repository_owner }}/home-assistant-os:latest-${{ matrix.tag_suffix }}
-          docker push ghcr.io/${{ github.repository_owner }}/home-assistant-os:${{ github.sha }}-${{ matrix.tag_suffix }}
-          
-      - name: Debug build failure
-        if: failure()
-        run: |
-          nix build --keep-failed --extra-experimental-features flakes --impure .#haos-image
-          echo "Build directory: $(find /tmp -name 'nix-build-*.drv-*' -type d | head -1)"
-          
-  create-manifest:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-    steps:
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create and push multi-arch manifest
-        run: |
-          IMAGE=ghcr.io/${{ github.repository_owner }}/home-assistant-os
-          docker manifest create $IMAGE:latest \
-            --amend $IMAGE:latest-amd64 \
-            --amend $IMAGE:latest-arm64
-          docker manifest push $IMAGE:latest
-
-          docker manifest create $IMAGE:${{ github.sha }} \
-            --amend $IMAGE:${{ github.sha }}-amd64 \
-            --amend $IMAGE:${{ github.sha }}-arm64
-          docker manifest push $IMAGE:${{ github.sha }}
-
-          docker manifest create $IMAGE:stable \
-            --amend $IMAGE:latest-amd64 \
-            --amend $IMAGE:latest-arm64
-          docker manifest push $IMAGE:stable
-
-  create-release:
-    needs: create-manifest
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Extract HAOS version from flake.nix
+      - name: Get version
         id: version
         run: |
-          # Extract version from the x86_64 URL (e.g., 17.3)
           VERSION=$(grep -oP 'haos_generic-x86-64-\K[0-9]+\.[0-9]+' flake.nix | head -1)
           if [ -z "$VERSION" ]; then
             echo "ERROR: Could not extract version from flake.nix"
             exit 1
           fi
-          echo "haos_version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+          echo "new_version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Check if release already exists
-        id: check_release
+      - name: Check if build needed
+        id: check
         run: |
-          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
+          FORCE=${{ inputs.force_rebuild }}
+          echo "force_rebuild=$FORCE" >> $GITHUB_OUTPUT
+          if [ "$FORCE" = "true" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
           fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION="${{ steps.version.outputs.new_version }}"
+          if docker manifest inspect ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:$VERSION > /dev/null 2>&1; then
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Create GitHub Release
-        if: steps.check_release.outputs.exists == 'false'
+  build:
+    needs: [check-version]
+    if: needs.check-version.outputs.should_build == 'true'
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+            tag_suffix: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            tag_suffix: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push image to temporary tag
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --title "Home Assistant OS ${{ steps.version.outputs.haos_version }}" \
-            --notes "Container image for HAOS ${{ steps.version.outputs.haos_version }}
+          REGISTRY="${{ env.REGISTRY }}/${{ github.repository_owner }}"
+          COMMIT_SHA="${{ github.sha }}"
+          nix run .#haos-image.copyToDockerDaemon --impure --extra-experimental-features flakes
+          docker tag home-assistant:latest "${REGISTRY}/${{ env.IMAGE_NAME }}:${COMMIT_SHA}-${{ matrix.tag_suffix }}"
+          docker push "${REGISTRY}/${{ env.IMAGE_NAME }}:${COMMIT_SHA}-${{ matrix.tag_suffix }}"
 
-            Pull with:
-            \`\`\`
-            docker pull ghcr.io/${{ github.repository_owner }}/home-assistant-os:latest
-            \`\`\`
+      - name: Debug build failure
+        if: failure()
+        run: |
+          nix build --keep-failed --extra-experimental-features flakes --impure .#haos-image
+          echo "Build directory: $(find /tmp -name 'nix-build-*.drv-*' -type d | head -1)"
 
-            See [README](https://github.com/${{ github.repository }}#readme) for usage."
+  test:
+    needs: [check-version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull and tag test image (amd64 only)
+        run: |
+          REGISTRY="${{ env.REGISTRY }}/${{ github.repository_owner }}"
+          COMMIT_SHA="${{ github.sha }}"
+          docker pull "${REGISTRY}/${{ env.IMAGE_NAME }}:${COMMIT_SHA}-amd64"
+          docker tag "${REGISTRY}/${{ env.IMAGE_NAME }}:${COMMIT_SHA}-amd64" "${REGISTRY}/${{ env.IMAGE_NAME }}:latest"
+
+      - name: Replace userns_mode with user directive
+        run: |
+          for f in compose.yml docker-compose.yml; do
+            if [ -f "$f" ]; then
+              sed -i 's/.*userns_mode:.*/    user: 1000:1000/' "$f"
+            fi
+          done
+
+      - name: Start services (30s timeout)
+        run: docker compose up -d --wait --timeout 30
+
+      - name: Check for container restarts
+        run: |
+          sleep 5
+          RESTARTED=""
+          while IFS= read -r line; do
+            NAME=$(echo "$line" | awk '{print $1}')
+            STATUS=$(echo "$line" | awk '{for(i=2;i<=NF;i++) printf "%s ", $i; print ""}')
+            if echo "$STATUS" | grep -qi 'restarted\|restarting'; then
+              RESTARTED="$RESTARTED $NAME"
+            fi
+          done < <(docker ps --format '{{.Names}} {{.Status}}')
+          if [ -n "$RESTARTED" ]; then
+            echo "❌ Containers restarted (crash-loop detected):"
+            echo "$RESTARTED"
+            docker compose logs --tail=50 $RESTARTED
+            exit 1
+          fi
+          echo "✅ No containers restarted"
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v --remove-orphans 2>/dev/null || true
+
+  publish:
+    needs: [check-version, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull, promote, and push architecture-specific images
+        run: |
+          VERSION="${{ needs.check-version.outputs.new_version }}"
+          REGISTRY="${{ env.REGISTRY }}/${{ github.repository_owner }}"
+          COMMIT_SHA="${{ github.sha }}"
+          IMAGE="${{ env.IMAGE_NAME }}"
+
+          for ARCH in amd64 arm64; do
+            docker pull "${REGISTRY}/${IMAGE}:${COMMIT_SHA}-${ARCH}"
+            docker tag "${REGISTRY}/${IMAGE}:${COMMIT_SHA}-${ARCH}" "${REGISTRY}/${IMAGE}:${VERSION}-${ARCH}"
+            docker push "${REGISTRY}/${IMAGE}:${VERSION}-${ARCH}"
+          done
+
+      - name: Create multi-arch manifests
+        run: |
+          VERSION="${{ needs.check-version.outputs.new_version }}"
+          REGISTRY="${{ env.REGISTRY }}/${{ github.repository_owner }}"
+          IMAGE="${{ env.IMAGE_NAME }}"
+
+          IFS=. read -r MAJOR MINOR _ <<< "${VERSION}"
+          TAGS="${VERSION}"
+          [ -n "${MAJOR}" ] && TAGS+=" ${MAJOR}"
+          [ -n "${MINOR}" ] && TAGS+=" ${MAJOR}.${MINOR}"
+          TAGS+=" latest"
+
+          for TAG in ${TAGS}; do
+            docker manifest create "${REGISTRY}/${IMAGE}:${TAG}" \
+              --amend "${REGISTRY}/${IMAGE}:${VERSION}-amd64" \
+              --amend "${REGISTRY}/${IMAGE}:${VERSION}-arm64"
+            docker manifest push "${REGISTRY}/${IMAGE}:${TAG}"
+          done
+
+  release:
+    needs: [check-version, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Create release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ needs.check-version.outputs.new_version }}"
+          FORCE="${{ needs.check-version.outputs.force_rebuild }}"
+          if gh release view "${VERSION}" --repo ${{ github.repository }} > /dev/null 2>&1; then
+            if [ "$FORCE" = "true" ]; then
+              echo "Deleting existing release ${VERSION} for force rebuild"
+              gh release delete "${VERSION}" --repo ${{ github.repository }} --yes --cleanup-tag
+            else
+              echo "Release ${VERSION} already exists, skipping"
+              exit 0
+            fi
+          fi
+          gh release create "${VERSION}" \
+            --repo ${{ github.repository }} \
+            --title "${VERSION}" \
+            --notes "home-assistant ${VERSION}"
+
+  cleanup:
+    needs: [check-version, release]
+    if: needs.check-version.outputs.force_rebuild == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Delete stale commit-SHA package versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          COMMIT_SHA="${{ github.sha }}"
+          ORG="${{ github.repository_owner }}"
+          IMAGE="${{ env.IMAGE_NAME }}"
+          VIDS=$(gh api "/orgs/${ORG}/packages/container/${IMAGE}/versions" --jq '.[].id' 2>/dev/null || true)
+          for VID in $VIDS; do
+            TAGS=$(gh api "/orgs/${ORG}/packages/container/${IMAGE}/versions/${VID}" --jq '.metadata.container.tags[]' 2>/dev/null || true)
+            if echo "$TAGS" | grep -q "^${COMMIT_SHA}"; then
+              echo "Deleting stale ${IMAGE} version ${VID} (has commit-SHA tag from this build)"
+              gh api --method DELETE "/orgs/${ORG}/packages/container/${IMAGE}/versions/${VID}" 2>/dev/null || echo "::warning::Could not delete ${IMAGE} version ${VID}"
+            fi
+          done
