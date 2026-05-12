@@ -122,8 +122,11 @@
         name = "home-assistant-os";
         tag = "latest";
         fromImage = base.packages.${system}.base-debug-image;
+        layers = [
+          (n2c.buildLayer { deps = [ haosSource ]; })
+        ];
         copyToRoot = [ rootfs ];
-        maxLayers = 6;
+        maxLayers = 5;
         config = imageConfig;
       };
 
