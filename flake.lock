@@ -6,11 +6,11 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1778430011,
-        "narHash": "sha256-24ByYN/tpVdVg6WSjPLi62IxCeu1I+yWdZF/HL5Ucfc=",
+        "lastModified": 1778633447,
+        "narHash": "sha256-GmxKGRsDjS0+Z3kHOo66wvoamW4thfq8AuEG5x49VUQ=",
         "owner": "podmania",
         "repo": "base",
-        "rev": "c16ccec61faeae696c7532ab35f28851bcb709c5",
+        "rev": "5bfddeea0bddd00f202d2b670fcc4f7fa4f30251",
         "type": "github"
       },
       "original": {
