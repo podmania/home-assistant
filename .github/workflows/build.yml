@@ -247,6 +247,13 @@ jobs:
           for VID in $VIDS; do
             TAGS=$(gh api "/orgs/${ORG}/packages/container/${IMAGE}/versions/${VID}" --jq '.metadata.container.tags[]' 2>/dev/null || true)
             if echo "$TAGS" | grep -q "^${COMMIT_SHA}"; then
+              # Skip versions that also carry version tags (e.g. 5.2.0-amd64) —
+              # those architecture manifests are still referenced by multi-arch
+              # manifest lists and must not be deleted.
+              if echo "$TAGS" | grep -qE "^[0-9]+\.[0-9]+"; then
+                echo "Skipping ${IMAGE} version ${VID} (has both commit-SHA and version tags — still referenced by manifest list)"
+                continue
+              fi
               echo "Deleting stale ${IMAGE} version ${VID} (has commit-SHA tag from this build)"
               gh api --method DELETE "/orgs/${ORG}/packages/container/${IMAGE}/versions/${VID}" 2>/dev/null || echo "::warning::Could not delete ${IMAGE} version ${VID}"
             fi
