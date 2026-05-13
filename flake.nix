@@ -68,11 +68,13 @@
       fi
       '' else ""}
 
-      if [ ! -e /dev/kvm ] || [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
-        echo "ERROR: KVM not available, refusing to run without hardware virtualization" >&2
-        exit 1
+      if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+        echo "KVM available, using hardware virtualization"
+        KVM_ARGS="-enable-kvm -cpu host"
+      else
+        echo "WARNING: KVM not available, falling back to software emulation (TCG)" >&2
+        KVM_ARGS="-accel tcg,thread=multi -cpu max"
       fi
-      KVM_ARGS="-enable-kvm -cpu host"
 
       exec qemu-system-${arch} $KVM_ARGS \
         -M ${machineType} \
