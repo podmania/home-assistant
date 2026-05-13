@@ -98,6 +98,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Login to GHCR
         uses: docker/login-action@v4
         with:
@@ -137,7 +143,13 @@ jobs:
           if [ -n "$RESTARTED" ]; then
             echo "❌ Containers restarted (crash-loop detected):"
             echo "$RESTARTED"
-            docker compose logs --tail=50 $RESTARTED
+            # Map container names to service names for docker compose logs
+            SVC_NAMES=""
+            for CNAME in $RESTARTED; do
+              SVC=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$CNAME" 2>/dev/null || echo "$CNAME")
+              SVC_NAMES="$SVC_NAMES $SVC"
+            done
+            docker compose logs --tail=50 $SVC_NAMES
             exit 1
           fi
           echo "✅ No containers restarted"
