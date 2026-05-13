@@ -41,7 +41,7 @@
       SOCKET_PATH="/run/virtiofsd/ha.sock"
       mkdir -p "$SHARED_DIR" "$(dirname $SOCKET_PATH)"
 
-      virtiofsd --socket-path="$SOCKET_PATH" --shared-dir="$SHARED_DIR" --cache=auto --sandbox=chroot --syslog &
+      virtiofsd --socket-path="$SOCKET_PATH" --shared-dir="$SHARED_DIR" --cache=auto --sandbox=none --syslog &
       VIRTIOFSD_PID=$!
       while [ ! -S "$SOCKET_PATH" ]; do
         if ! kill -0 $VIRTIOFSD_PID 2>/dev/null; then exit 1; fi
