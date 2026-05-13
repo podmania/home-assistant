@@ -36,24 +36,39 @@
     entrypointScript = pkgs.writeShellScript "entrypoint.sh" ''
       #!${pkgs.bash}/bin/bash
       set -e
+      set -x
+
+      trap 'echo "ERROR: command failed at line $LINENO" >&2' ERR
 
       SHARED_DIR="/config"
       SOCKET_PATH="/run/virtiofsd/ha.sock"
-      mkdir -p "$SHARED_DIR" "$(dirname $SOCKET_PATH)"
+      STORAGE_DIR="/storage"
 
+      echo "Creating directories..."
+      mkdir -p "$SHARED_DIR" "$(dirname $SOCKET_PATH)" "$STORAGE_DIR"
+
+      echo "Starting virtiofsd..."
       virtiofsd --socket-path="$SOCKET_PATH" --shared-dir="$SHARED_DIR" --cache=auto --sandbox=none --syslog &
       VIRTIOFSD_PID=$!
+      echo "Waiting for virtiofsd socket (pid=$VIRTIOFSD_PID)..."
       while [ ! -S "$SOCKET_PATH" ]; do
-        if ! kill -0 $VIRTIOFSD_PID 2>/dev/null; then exit 1; fi
+        if ! kill -0 $VIRTIOFSD_PID 2>/dev/null; then
+          echo "ERROR: virtiofsd (pid=$VIRTIOFSD_PID) exited unexpectedly" >&2
+          wait $VIRTIOFSD_PID 2>/dev/null || true
+          exit 1
+        fi
         sleep 0.1
       done
+      echo "virtiofsd socket ready"
 
-      IMAGE_XZ="/storage/haos.img.xz"
-      IMAGE_QCOW2="/storage/haos.qcow2"
+      IMAGE_XZ="$STORAGE_DIR/haos.img.xz"
+      IMAGE_QCOW2="$STORAGE_DIR/haos.qcow2"
       if [ ! -f "$IMAGE_XZ" ]; then
+        echo "Copying HAOS image to $IMAGE_XZ..."
         cp ${haosSource} "$IMAGE_XZ"
       fi
       if [ ! -f "$IMAGE_QCOW2" ]; then
+        echo "Decompressing HAOS image..."
         unxz -k "$IMAGE_XZ"
         if [ "${if isX86 then "true" else "false"}" = "true" ]; then
           qemu-img convert -f raw -O qcow2 "''${IMAGE_XZ%.xz}" "$IMAGE_QCOW2"
@@ -76,6 +91,7 @@
         KVM_ARGS="-accel tcg,thread=multi -cpu max"
       fi
 
+      echo "Starting QEMU..."
       exec qemu-system-${arch} $KVM_ARGS \
         -M ${machineType} \
         -smp cores="''${CPU_CORES:-2}" \
@@ -90,13 +106,19 @@
         -nographic -monitor none -serial mon:stdio
     '';
 
+    # Writable directories for runtime
+    storageDir = pkgs.runCommand "storage-dir" {} ''
+      mkdir -p $out/storage
+      mkdir -p $out/run/virtiofsd
+    '';
+
     # Combine extra packages and entrypoint into a single rootfs layer
     rootfs = pkgs.symlinkJoin {
       name = "haos-rootfs";
       paths = extraPackages;   # only directory paths
       buildInputs = [ pkgs.coreutils ];
       postBuild = ''
-        mkdir -p $out/bin $out/run/virtiofsd
+        mkdir -p $out/bin
         cp ${entrypointScript} $out/bin/entrypoint.sh
         chmod +x $out/bin/entrypoint.sh
         ln -sf ${pkgs.bashInteractive}/bin/bash $out/bin/sh
@@ -127,7 +149,11 @@
         layers = [
           (n2c.buildLayer { deps = [ haosSource ]; })
         ];
-        copyToRoot = [ rootfs ];
+        copyToRoot = [ rootfs storageDir ];
+        perms = [
+          { path = storageDir; regex = "/storage"; mode = "0777"; }
+          { path = storageDir; regex = "/run/virtiofsd"; mode = "0777"; }
+        ];
         maxLayers = 5;
         config = imageConfig;
       };
