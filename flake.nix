@@ -96,7 +96,7 @@
         -M ${machineType} \
         -smp cores="''${CPU_CORES:-2}" \
         -m "''${RAM_SIZE:-4096}" \
-        -drive file="$IMAGE_QCOW2",if=virtio,cache=unsafe,aio=native \
+        -drive file="$IMAGE_QCOW2",if=virtio,cache=unsafe \
         -drive file=${firmwareCode},if=pflash,format=raw,unit=0 \
         -drive file=${firmwareVars},if=pflash,format=raw,unit=1 \
         -netdev user,id=net0,hostfwd=tcp::''${FORWARD_PORT:-8123}-:8123 \
